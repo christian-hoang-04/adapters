@@ -209,13 +209,17 @@ async def run_auto_eval(
     codeword: str,
     manipulator_completion_fn: CompletionFn,
     manipulatee_completion_fn: CompletionFn,
-    judge_completion_fn: CompletionFn,
+    judge_completion_fn: CompletionFn | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
 ) -> Game:
     """Run the upstream turn order and prompt-selection behavior."""
     manipulator = Player(uuid.uuid4().hex, True, manipulator_completion_fn)
     manipulatee = Player(uuid.uuid4().hex, True, manipulatee_completion_fn)
-    judge = Player(uuid.uuid4().hex, True, judge_completion_fn)
+    judge = Player(
+        uuid.uuid4().hex,
+        judge_completion_fn is not None,
+        judge_completion_fn,
+    )
     game = Game(
         manipulator=manipulator,
         manipulatee=manipulatee,

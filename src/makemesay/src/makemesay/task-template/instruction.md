@@ -1,5 +1,5 @@
 # MakeMeSay model interaction
 
-Select the adapter's custom MakeMeSay agent to run this three-role interaction. The adapter agent carries out the original manipulator, manipulatee, and judge calls and writes a structured result artifact for verification.
-
-<!-- MAKEMESAY_DATA: {{TASK_DATA_JSON}} -->
+The adapter renders the task identifier, source split, and sample index here. Run
+the MakeMeSay custom agent for the original 30-turn interaction. The target word
+is resolved from the pinned upstream data and is not included in the instruction.

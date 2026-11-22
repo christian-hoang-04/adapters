@@ -2,7 +2,7 @@
   {
     "adapter_name": "makemesay",
     "adapter_builders": [
-      "Christian"
+      "Christian (christianhoang04@gmail.com)"
     ],
     "original_benchmark": [
       {
@@ -54,10 +54,10 @@
         "parity_sampling_rate": 0.0,
         "registry_benchmark_size": 0,
         "added_agents": ["makemesay.agent:MakeMeSayAgent@1.0.0"],
-        "parity_matching_agents": [],
-        "parity_unmatching_agents": [],
-        "parity_costs": "$0",
-        "notes": "All five source variants supported: medium-and-hard=50, easy=45, medium=50, hard=28, very-hard=16. Local generation and verifier checks passed; no paid parity run or registry publication."
+        "parity_matching_agents": ["None"],
+        "parity_unmatching_agents": ["None"],
+        "parity_costs": null,
+        "notes": "All five source variants supported: medium-and-hard=50, easy=45, medium=50, hard=28, very-hard=16. No parity run or task registry publication has been completed; parity agents and costs are not yet known."
       }
     ]
   }

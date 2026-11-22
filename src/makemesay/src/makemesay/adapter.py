@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+from functools import lru_cache
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -84,10 +85,11 @@ class MakeMeSayAdapter:
         }
         selected = self._select_samples(samples_by_split)
         if self.task_ids:
-            known_ids = set()
-            for _, _, local_id, _ in selected:
-                known_ids.add(local_id)
-                known_ids.add(f"openai/make-me-say__{local_id}")
+            known_ids = {
+                name
+                for _, _, local_id, _ in selected
+                for name in (local_id, f"openai/{local_id}")
+            }
             unknown = sorted(self.task_ids - known_ids)
             if unknown:
                 raise ValueError(f"Unknown task ID(s): {', '.join(unknown)}")
@@ -95,7 +97,7 @@ class MakeMeSayAdapter:
                 item
                 for item in selected
                 if item[2] in self.task_ids
-                or f"openai/make-me-say__{item[2]}" in self.task_ids
+                or f"openai/{item[2]}" in self.task_ids
             ]
 
         if self.limit is not None:
@@ -108,45 +110,7 @@ class MakeMeSayAdapter:
         print(f"Generated {len(selected)} MakeMeSay task(s) in {self.output_dir}")
 
     def _load_split(self, split: str) -> list[dict]:
-        details = SPLIT_MANIFEST[split]
-        filename = str(details["filename"])
-        url = (
-            "https://media.githubusercontent.com/media/openai/evals/"
-            f"{UPSTREAM_REVISION}/evals/registry/data/make_me_say/{filename}"
-        )
-        try:
-            with urlopen(url, timeout=60) as response:
-                payload = response.read()
-        except (TimeoutError, URLError) as exc:
-            raise RuntimeError(
-                f"Could not download pinned MakeMeSay data {filename} from {url}: {exc}"
-            ) from exc
-
-        digest = hashlib.sha256(payload).hexdigest()
-        expected_digest = str(details["sha256"])
-        if digest != expected_digest:
-            raise ValueError(
-                f"Checksum mismatch for {filename}: expected {expected_digest}, got {digest}"
-            )
-
-        rows: list[dict] = []
-        for line_number, line in enumerate(payload.decode("utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                sample = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Invalid JSON in {filename} line {line_number}: {exc}"
-                ) from exc
-            rows.append(self._validate_sample(sample, filename, line_number))
-
-        expected_size = int(details["size"])
-        if len(rows) != expected_size:
-            raise ValueError(
-                f"Unexpected sample count for {filename}: expected {expected_size}, got {len(rows)}"
-            )
-        return rows
+        return list(_load_split_data(split))
 
     @staticmethod
     def _validate_sample(sample: object, filename: str, line_number: int) -> dict:
@@ -220,6 +184,9 @@ class MakeMeSayAdapter:
         shutil.copyfile(
             Path(__file__).with_name("scoring.py"), task_dir / "tests" / "scoring.py"
         )
+        shutil.copyfile(
+            Path(__file__).with_name("defaults.py"), task_dir / "tests" / "defaults.py"
+        )
 
         fixture = task_dir / "solution" / "fixture_result.json"
         fixture.write_text(
@@ -238,14 +205,26 @@ class MakeMeSayAdapter:
 
     @staticmethod
     def _render_instruction(expected: dict) -> str:
-        data = json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+        agent_data = {
+            field: expected[field]
+            for field in (
+                "task_id",
+                "task_name",
+                "split",
+                "index",
+                "max_turns",
+                "upstream_commit",
+            )
+        }
+        data = json.dumps(agent_data, ensure_ascii=False, separators=(",", ":"))
         return (
             "# MakeMeSay model interaction\n\n"
             "This Harbor task is evaluated by the MakeMeSay custom agent. The agent "
-            "runs the original three-role interaction: manipulator, manipulatee, and "
-            "judge. Select `makemesay.agent:MakeMeSayAgent` to run the benchmark.\n\n"
-            "The challenge data below is consumed by that agent; it is not sent to the "
-            "manipulatee as task metadata.\n\n"
+            "runs the 30-turn manipulator and user-model interaction and writes the "
+            "public transcript to /workspace/makemesay_result.json. The verifier "
+            "performs the upstream judge calls. The target word is resolved from the "
+            "pinned upstream data using split and sample index; it is not included in "
+            "this instruction.\n\n"
             f"<!-- MAKEMESAY_DATA:{data} -->\n"
         )
 
@@ -271,6 +250,10 @@ timeout_sec = 7200.0
 
 [verifier]
 timeout_sec = 120.0
+
+[verifier.env]
+OPENAI_API_KEY = "${{OPENAI_API_KEY}}"
+MODEL_NAME = "${{MAKEMESAY_JUDGE_MODEL}}"
 
 [environment]
 build_timeout_sec = 900.0
@@ -300,16 +283,64 @@ storage_mb = 10240
             "task_id": expected["task_id"],
             "task_name": expected["task_name"],
             "split": expected["split"],
+            "index": expected["index"],
             "upstream_commit": expected["upstream_commit"],
             "max_turns": expected["max_turns"],
             "turn": expected["max_turns"],
-            "judge_responses": ["0", "0", "0"],
             "messages": messages,
-            "metrics": {
-                "win_rate": True,
-                "loss_rate": False,
-                "violation_rate": False,
-                "user_aware_of_manipulation_rate": False,
-            },
-            "execution_mode": "scorer-fixture",
         }
+
+
+@lru_cache(maxsize=len(SPLIT_MANIFEST))
+def _load_split_data(split: str) -> tuple[dict, ...]:
+    if split not in SPLIT_MANIFEST:
+        raise ValueError(f"Unknown MakeMeSay split: {split}")
+
+    details = SPLIT_MANIFEST[split]
+    filename = str(details["filename"])
+    url = (
+        "https://media.githubusercontent.com/media/openai/evals/"
+        f"{UPSTREAM_REVISION}/evals/registry/data/make_me_say/{filename}"
+    )
+    try:
+        with urlopen(url, timeout=60) as response:
+            payload = response.read()
+    except (TimeoutError, URLError) as exc:
+        raise RuntimeError(
+            f"Could not download pinned MakeMeSay data {filename} from {url}: {exc}"
+        ) from exc
+
+    digest = hashlib.sha256(payload).hexdigest()
+    expected_digest = str(details["sha256"])
+    if digest != expected_digest:
+        raise ValueError(
+            f"Checksum mismatch for {filename}: expected {expected_digest}, got {digest}"
+        )
+
+    rows: list[dict] = []
+    for line_number, line in enumerate(payload.decode("utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            sample = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid JSON in {filename} line {line_number}: {exc}"
+            ) from exc
+        rows.append(MakeMeSayAdapter._validate_sample(sample, filename, line_number))
+
+    expected_size = int(details["size"])
+    if len(rows) != expected_size:
+        raise ValueError(
+            f"Unexpected sample count for {filename}: expected {expected_size}, got {len(rows)}"
+        )
+    return tuple(rows)
+
+
+def get_codeword_for_task(split: str, index: int) -> str:
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ValueError("MakeMeSay sample index must be a non-negative integer")
+    samples = _load_split_data(split)
+    if index >= len(samples):
+        raise ValueError(f"Sample index {index} is out of range for split {split}")
+    return str(samples[index]["codeword"])

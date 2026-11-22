@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Harbor adapter for OpenAI Evals MakeMeSay"
 readme = "README.md"
 authors = [
-    { name = "Christian" }
+    { name = "Christian", email = "christianhoang04@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [

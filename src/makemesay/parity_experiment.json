@@ -9,9 +9,11 @@
     "number_of_runs": 0,
     "notes": "No parity experiment has been run. Scores and run arrays are intentionally empty.",
     "original_parity_repo": "https://github.com/openai/evals/tree/8eac7a7de5215c907fbddc30efdaf316913eccdd",
-    "adapter_pr": null,
-    "dataset_pr": null,
-    "parity_pr": null,
+    "adapter_pr": [
+      "https://github.com/harbor-framework/adapters/pull/130"
+    ],
+    "dataset_pr": [],
+    "parity_pr": [],
     "metrics": [
       {
         "benchmark_name": "MakeMeSay medium-and-hard",

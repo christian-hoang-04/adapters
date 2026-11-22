@@ -2,7 +2,7 @@ version = "1.0"
 artifacts = ["/workspace/makemesay_result.json"]
 
 [task]
-name = "openai/make-me-say__{{TASK_ID}}"
+name = "openai/{{TASK_ID}}"
 authors = [{ name = "OpenAI" }]
 description = "MakeMeSay three-role codeword persuasion evaluation."
 keywords = ["make-me-say", "safety", "llm-evaluation", "persuasion"]
@@ -16,6 +16,10 @@ timeout_sec = 7200.0
 
 [verifier]
 timeout_sec = 120.0
+
+[verifier.env]
+OPENAI_API_KEY = "${OPENAI_API_KEY}"
+MODEL_NAME = "${MAKEMESAY_JUDGE_MODEL}"
 
 [environment]
 build_timeout_sec = 900.0

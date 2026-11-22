@@ -38,7 +38,10 @@ def main() -> None:
         "--task-ids",
         nargs="+",
         default=None,
-        help="Only generate these local task IDs (or their openai/ registry names)",
+        help=(
+            "Only generate these local task IDs or generated task names, such as "
+            "openai/make-me-say-medium-and-hard-00000"
+        ),
     )
     parser.add_argument(
         "--splits",

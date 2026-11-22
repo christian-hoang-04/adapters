@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import re
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from litellm import acompletion
-from openai import InternalServerError
 from pydantic import Field
 
 from harbor.agents.agent_auth_resolution import ModelConnectionSpec, ProviderAccess
@@ -19,6 +18,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.model_api_format import ModelApiFormat
 
+from .adapter import UPSTREAM_REVISION, SPLIT_MANIFEST, get_codeword_for_task
 from .core import Game, run_auto_eval
 from .scoring import ensure_nltk_resources, remove_internal_monologue
 
@@ -27,7 +27,6 @@ class MakeMeSayOptions(AgentOptions):
     """Optional role models; omitted roles reuse Harbor's selected model."""
 
     manipulatee_model: str | None = Field(default=None, min_length=1)
-    judge_model: str | None = Field(default=None, min_length=1)
     request_timeout_sec: float = Field(default=120.0, gt=0)
 
 
@@ -44,9 +43,6 @@ class MakeMeSayAgent(BaseAgent):
         ),
         supported_api_formats=[
             ModelApiFormat.OPENAI_CHAT_COMPLETIONS,
-            ModelApiFormat.ANTHROPIC_MESSAGES,
-            ModelApiFormat.GOOGLE_GENERATE_CONTENT,
-            ModelApiFormat.BEDROCK_CONVERSE,
         ],
         default_api_format_by_provider={
             "default": ModelApiFormat.OPENAI_CHAT_COMPLETIONS,
@@ -75,7 +71,6 @@ class MakeMeSayAgent(BaseAgent):
             raise ValueError("A manipulator model is required; pass Harbor's --model option")
         options = self.options or MakeMeSayOptions()
         manipulatee_model = options.manipulatee_model or manipulator_model
-        judge_model = options.judge_model or manipulator_model
 
         ensure_nltk_resources()
         token_usage = {"input": 0, "output": 0, "cache": 0, "calls": 0}
@@ -94,24 +89,14 @@ class MakeMeSayAgent(BaseAgent):
                     "model": model_name,
                     "messages": messages,
                     "timeout": options.request_timeout_sec,
-                    "num_retries": 0,
+                    "num_retries": 3,
                 }
                 if connection.api_key is not None:
                     kwargs["api_key"] = connection.api_key
                 if connection.execution_base_url is not None:
                     kwargs["api_base"] = connection.execution_base_url
 
-                response = None
-                for attempt in range(3):
-                    try:
-                        response = await acompletion(**kwargs)
-                        break
-                    except InternalServerError:
-                        if attempt == 2:
-                            raise
-                        await asyncio.sleep(1)
-                if response is None:
-                    raise RuntimeError(f"No completion response from {role} model")
+                response = await acompletion(**kwargs)
 
                 content = response.choices[0].message.content
                 if not isinstance(content, str):
@@ -133,38 +118,27 @@ class MakeMeSayAgent(BaseAgent):
 
         manipulator_completion = completion_for(manipulator_model, "manipulator")
         manipulatee_completion = completion_for(manipulatee_model, "manipulatee")
-        judge_completion = completion_for(judge_model, "judge")
 
         game = await run_auto_eval(
             codeword=task_data["codeword"],
             manipulator_completion_fn=manipulator_completion,
             manipulatee_completion_fn=manipulatee_completion,
-            judge_completion_fn=judge_completion,
             max_turns=task_data["max_turns"],
         )
 
-        metrics = {
-            "win_rate": await game.is_win(),
-            "loss_rate": await game.is_loss(),
-            "violation_rate": game.is_violation(),
-            "user_aware_of_manipulation_rate": await game.is_user_aware_of_manipulation(),
-        }
         public_messages = self._public_messages(game)
         result = {
             "schema_version": 1,
             "task_id": task_data["task_id"],
             "task_name": task_data["task_name"],
             "split": task_data["split"],
+            "index": task_data["index"],
             "upstream_commit": task_data["upstream_commit"],
             "manipulator_model": manipulator_model,
             "manipulatee_model": manipulatee_model,
-            "judge_model": judge_model,
             "max_turns": game.max_turns,
             "turn": game.turn,
-            "judge_responses": game.judge_responses,
             "messages": public_messages,
-            "metrics": metrics,
-            "execution_mode": "model",
         }
         await self._write_result(environment, result)
 
@@ -175,8 +149,7 @@ class MakeMeSayAgent(BaseAgent):
             "task_id": task_data["task_id"],
             "split": task_data["split"],
             "max_turns": game.max_turns,
-            "model_calls": token_usage["calls"],
-            "metric_names": list(metrics),
+            "role_completion_calls": token_usage["calls"],
         }
 
     @staticmethod
@@ -192,15 +165,27 @@ class MakeMeSayAgent(BaseAgent):
             "task_id",
             "task_name",
             "split",
-            "codeword",
+            "index",
             "upstream_commit",
         }
         if not isinstance(data, dict) or not required.issubset(data):
             raise ValueError("MakeMeSay task data is missing required fields")
-        if not isinstance(data["codeword"], str) or not data["codeword"].isalpha():
-            raise ValueError("MakeMeSay task codeword must be a non-empty alphabetic word")
+        split = data["split"]
+        index = data["index"]
+        if split not in SPLIT_MANIFEST:
+            raise ValueError(f"Unknown MakeMeSay split in task data: {split}")
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            raise ValueError("MakeMeSay task index must be a non-negative integer")
+        expected_task_id = f"make-me-say-{split}-{index:05d}"
+        if data["task_id"] != expected_task_id:
+            raise ValueError("MakeMeSay task ID does not match its split and index")
+        if data["task_name"] != f"openai/{expected_task_id}":
+            raise ValueError("MakeMeSay task name does not match its task ID")
+        if data["upstream_commit"] != UPSTREAM_REVISION:
+            raise ValueError("MakeMeSay task data uses an unexpected upstream revision")
         if data.get("max_turns") != 30:
             raise ValueError("This adapter preserves MakeMeSay's 30-turn default")
+        data["codeword"] = get_codeword_for_task(split, index)
         return data
 
     @staticmethod
@@ -222,17 +207,13 @@ class MakeMeSayAgent(BaseAgent):
     async def _write_result(
         environment: BaseEnvironment, result: dict[str, Any]
     ) -> None:
-        encoded = base64.b64encode(
-            json.dumps(result, ensure_ascii=False).encode("utf-8")
-        ).decode("ascii")
-        command = (
-            "python3 -c 'import base64,pathlib; "
-            "pathlib.Path(\"/workspace/makemesay_result.json\").write_bytes("
-            f"base64.b64decode(\"{encoded}\"))'"
-        )
-        response = await environment.exec(command=command, timeout_sec=30)
-        if response.return_code != 0:
-            raise RuntimeError(
-                "Could not write MakeMeSay result artifact: "
-                f"{response.stderr or response.stdout}"
+        with tempfile.TemporaryDirectory(prefix="makemesay-result-") as temp_dir:
+            local_path = Path(temp_dir) / "makemesay_result.json"
+            local_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            await environment.upload_file(
+                source_path=local_path,
+                target_path="/workspace/makemesay_result.json",
             )

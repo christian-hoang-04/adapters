@@ -3,8 +3,9 @@ datasets:
 
 agents:
   - name: makemesay.agent:MakeMeSayAgent
-    # Supply the manipulator model with `-m`. By default all three roles use it.
-    # Set kwargs.manipulatee_model and kwargs.judge_model to use separate models.
+    # Supply the manipulator model with -m. By default the manipulatee uses it too.
+    # Set kwargs.manipulatee_model for a separate manipulatee model.
+    # The verifier judge model is set through MAKEMESAY_JUDGE_MODEL.
     kwargs:
       request_timeout_sec: 120
 
